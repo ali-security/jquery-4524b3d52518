@@ -1615,7 +1615,7 @@ function testHtml( valueObj ) {
 		div = jQuery("<div></div>"),
 		fixture = jQuery("#qunit-fixture");
 
-	div.html( valueObj("<div id='parent_1'><div id='child_1'/></div><div id='parent_2'/>") );
+	div.html( valueObj("<div id='parent_1'><div id='child_1'></div></div><div id='parent_2'></div>") );
 	equal( div.children().length, 2, "Found children" );
 	equal( div.children().children().length, 1, "Found grandchild" );
 
@@ -2231,7 +2231,7 @@ test( "Guard against exceptions when clearing safeChildNodes", function() {
 	var div;
 
 	try {
-		div = jQuery("<div/><hr/><code/><b/>");
+		div = jQuery("<div></div><hr/><code></code><b></b>");
 	} catch(e) {}
 
 	ok( div && div.jquery, "Created nodes safely, guarded against exceptions on safeChildNodes[ -1 ]" );
@@ -2348,7 +2348,7 @@ test( "script evaluation (#11795)", function() {
 
 	if ( jQuery.ajax ) {
 		Globals.register("testBar");
-		jQuery("#qunit-fixture").append( "<script src='" + url("data/testbar.php") + "'/>" );
+		jQuery("#qunit-fixture").append( "<script src='" + url("data/testbar.php") + "'></script>" );
 		strictEqual( window["testBar"], "bar", "Global script evaluation" );
 	} else {
 		ok( true, "No jQuery.ajax" );
@@ -2370,7 +2370,7 @@ test( "jQuery._evalUrl (#12838)", function() {
 		equal( ( input.url || input ).slice( -1 ), expectedArgument, message );
 		expectedArgument++;
 	};
-	jQuery("#qunit-fixture").append("<script src='1'/><script src='2'/>");
+	jQuery("#qunit-fixture").append("<script src='1'></script><script src='2'></script>");
 	equal( expectedArgument, 3, "synchronous execution" );
 
 	message = "custom implementation";
@@ -2379,7 +2379,7 @@ test( "jQuery._evalUrl (#12838)", function() {
 	jQuery.ajax = function( options ) {
 		strictEqual( options, {}, "Unexpected call to jQuery.ajax" );
 	};
-	jQuery("#qunit-fixture").append("<script src='3'/><script src='4'/>");
+	jQuery("#qunit-fixture").append("<script src='3'></script><script src='4'></script>");
 
 	jQuery.ajax = ajax;
 	jQuery._evalUrl = evalUrl;
@@ -2422,7 +2422,7 @@ test( "insertAfter, insertBefore, etc do not work when destination is original e
 test( "Index for function argument should be received (#13094)", 2, function() {
 	var i = 0;
 
-	jQuery("<div/><div/>").before(function( index ) {
+	jQuery("<div></div><div></div>").before(function( index ) {
 		equal( index, i++, "Index should be correct" );
 	});
 
@@ -2435,4 +2435,175 @@ test( "Make sure jQuery.fn.remove can work on elements in documentFragment", 1, 
 	jQuery( div ).remove();
 
 	equal( fragment.childNodes.length, 0, "div element was removed from documentFragment" );
+});
+
+test( "Self-closing non-void tags are not expanded (gh-4642)", function() {
+	expect( 9 );
+
+	var div = jQuery("<div></div>").html("<div/><div/>");
+
+	equal( div.children().length, 1, "html(): Found one child" );
+	equal( div.children().children().length, 1, "html(): Found one grandchild" );
+
+	div = jQuery("<div></div>").append("<div/><div/>");
+	equal( div.children().length, 1, "append(): Found one child" );
+	equal( div.children().children().length, 1, "append(): Found one grandchild" );
+
+	div = jQuery("<div/><div/>");
+	equal( div.length, 1, "jQuery(): Found one top-level element" );
+	equal( div.children().length, 1, "jQuery(): Found one child" );
+
+	equal( jQuery.parseHTML("<div/><div/>").length, 1, "jQuery.parseHTML(): Found one top-level element" );
+
+	equal( jQuery("<div></div>").html("<div></div><div></div>").children().length, 2,
+		"html(): Explicitly closed tags still create sibling elements" );
+	equal( jQuery("<div></div>").html("<img/><br/><input/>").children().length, 3,
+		"html(): Self-closing void tags are still parsed" );
+});
+
+asyncTest( "Sanitized HTML doesn't get unsanitized", function() {
+
+	var container, i,
+		executed = {},
+		htmlStrings = [
+
+			// Thanks to Masato Kinugawa from Cure53 for providing the following test cases.
+			// Note: the xss() argument of each payload must equal its index in this array.
+			"<img alt=\"<x\" title=\"/><img src=url404 onerror=xss(0)>\">",
+			"<img alt=\"\n<x\" title=\"/>\n<img src=url404 onerror=xss(1)>\">",
+			"<style><style/><img src=url404 onerror=xss(2)>",
+			"<xmp><xmp/><img src=url404 onerror=xss(3)>",
+			"<title><title /><img src=url404 onerror=xss(4)>",
+			"<iframe><iframe/><img src=url404 onerror=xss(5)>",
+			"<noframes><noframes/><img src=url404 onerror=xss(6)>",
+			"<noscript><noscript/><img src=url404 onerror=xss(7)>",
+			"<foo\" alt=\"\" title=\"/><img src=url404 onerror=xss(8)>\">",
+			"<img alt=\"<x\" title=\"\" src=\"/><img src=url404 onerror=xss(9)>\">",
+			"<noscript/><img src=url404 onerror=xss(10)>",
+			"<template><style></template><img src=url404 onerror=xss(11)>"
+		];
+
+	expect( htmlStrings.length );
+
+	Globals.register("xss");
+	window.xss = function( index ) {
+		executed[ index ] = true;
+	};
+
+	container = jQuery("<div></div>").appendTo("#qunit-fixture");
+
+	for ( i = 0; i < htmlStrings.length; i++ ) {
+		jQuery("<div></div>").appendTo( container ).html( htmlStrings[ i ] );
+	}
+
+	setTimeout(function() {
+		for ( i = 0; i < htmlStrings.length; i++ ) {
+			ok( !executed[ i ], "Insecure code wasn't executed, input: " + htmlStrings[ i ] );
+		}
+		start();
+	}, 1000 );
+});
+
+asyncTest( "Self-closing raw text elements can't smuggle markup through any HTML entry point (gh-4642)", function() {
+
+	var container, i, j, html,
+		began = new Date().getTime(),
+
+		// The XHTML tag expansion jQuery applied to HTML strings before this fix
+		rlegacyXhtmlTag = /<(?!area|br|col|embed|hr|img|input|link|meta|param)(([\w:]+)[^>]*)\/>/gi,
+		executed = {},
+		payloads = [],
+		controls = [],
+		templates = [
+			"<style><style/><img src=url404 onerror=xss(#)>",
+			"<xmp><xmp/><img src=url404 onerror=xss(#)>",
+			"<title><title /><img src=url404 onerror=xss(#)>",
+			"<textarea><textarea/><img src=url404 onerror=xss(#)>",
+			"<iframe><iframe/><img src=url404 onerror=xss(#)>",
+			"<noembed><noembed/><img src=url404 onerror=xss(#)>",
+			"<noframes><noframes/><img src=url404 onerror=xss(#)>",
+			"<noscript><noscript/><img src=url404 onerror=xss(#)>",
+			"<noscript/><img src=url404 onerror=xss(#)>"
+		],
+		methods = [
+			[ "html", function( htmlString ) {
+				jQuery("<div></div>").appendTo( container ).html( htmlString );
+			} ],
+			[ "append", function( htmlString ) {
+				jQuery("<div></div>").appendTo( container ).append( htmlString );
+			} ],
+			[ "before", function( htmlString ) {
+				jQuery("<div></div>").appendTo( container ).before( htmlString );
+			} ],
+			[ "jQuery", function( htmlString ) {
+				jQuery( htmlString );
+			} ],
+			[ "jQuery.parseHTML", function( htmlString ) {
+
+				// Use the live document as context; the default inert document
+				// never loads images, so it can't expose the payload
+				jQuery.parseHTML( htmlString, document );
+			} ]
+		];
+
+	function finish() {
+		var k;
+
+		for ( k = 0; k < payloads.length; k++ ) {
+			if ( jQuery.inArray( k, controls ) > -1 ) {
+				ok( executed[ k ], "Control, payload runs once expanded the pre-fix way: " + payloads[ k ] );
+			} else {
+				ok( !executed[ k ], "Payload isn't executed: " + payloads[ k ] );
+			}
+		}
+		start();
+	}
+
+	function waitForControls() {
+		var k,
+			pending = 0;
+
+		for ( k = 0; k < controls.length; k++ ) {
+			if ( !executed[ controls[ k ] ] ) {
+				pending++;
+			}
+		}
+
+		if ( !pending || new Date().getTime() - began > 10000 ) {
+
+			// Leave time for any other injected handler to run
+			setTimeout( finish, 500 );
+		} else {
+			setTimeout( waitForControls, 50 );
+		}
+	}
+
+	expect( templates.length * ( methods.length + 1 ) );
+
+	Globals.register("xss");
+	window.xss = function( index ) {
+		executed[ index ] = true;
+	};
+
+	container = jQuery("<div></div>").appendTo("#qunit-fixture");
+
+	for ( i = 0; i < templates.length; i++ ) {
+		for ( j = 0; j < methods.length; j++ ) {
+			html = templates[ i ].replace( "#", payloads.length );
+			payloads.push( methods[ j ][ 0 ] + "( " + html + " )" );
+			methods[ j ][ 1 ]( html );
+		}
+	}
+
+	// Control: the same payloads, expanded the way jQuery did before this fix
+	// and injected with the native innerHTML, do execute in this browser
+	for ( i = 0; i < templates.length; i++ ) {
+		html = templates[ i ].replace( "#", payloads.length );
+		controls.push( payloads.length );
+		payloads.push( "legacy expansion + innerHTML( " + html + " )" );
+		container[ 0 ].appendChild( document.createElement("div") ).innerHTML =
+			html.replace( rlegacyXhtmlTag, "<$1></$2>" );
+	}
+
+	waitForControls();
 });
