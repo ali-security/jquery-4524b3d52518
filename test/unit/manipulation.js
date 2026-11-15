@@ -2480,7 +2480,8 @@ asyncTest( "Sanitized HTML doesn't get unsanitized", function() {
 			"<foo\" alt=\"\" title=\"/><img src=url404 onerror=xss(8)>\">",
 			"<img alt=\"<x\" title=\"\" src=\"/><img src=url404 onerror=xss(9)>\">",
 			"<noscript/><img src=url404 onerror=xss(10)>",
-			"<template><style></template><img src=url404 onerror=xss(11)>"
+			"<template><style></template><img src=url404 onerror=xss(11)>",
+			"<option><style></option></select><img src=url404 onerror=xss(12)></style>"
 		];
 
 	expect( htmlStrings.length );
@@ -2606,4 +2607,163 @@ asyncTest( "Self-closing raw text elements can't smuggle markup through any HTML
 	}
 
 	waitForControls();
+});
+
+test( "Option and optgroup HTML is parsed like innerHTML, without a select wrapper (gh-4647)", function() {
+
+	var i, j, html, nativeDiv, optionOutsideSelect,
+		htmlStrings = [
+
+			// A sanitizer parsing these as body content sees a harmless <style> element;
+			// parsed inside a <select> wrapper, the <img> becomes a real element
+			"<option><style></option></select><img alt='x'></style>",
+			"<optgroup><style></optgroup></select><img alt='x'></style>",
+
+			// A <select> wrapper is closed by the inner <select>, which then gets lost
+			"<option>a</option><select></select>",
+			"<optgroup label='a'></optgroup><select></select>"
+		],
+		methods = [
+			[ "html", function( htmlString ) {
+				return jQuery("<div></div>").html( htmlString ).html();
+			} ],
+			[ "append", function( htmlString ) {
+				return jQuery("<div></div>").append( htmlString ).html();
+			} ],
+			[ "jQuery", function( htmlString ) {
+				return jQuery("<div></div>").append( jQuery( htmlString ) ).html();
+			} ],
+			[ "jQuery.parseHTML", function( htmlString ) {
+				return jQuery("<div></div>").append( jQuery.parseHTML( htmlString ) ).html();
+			} ]
+		];
+
+	expect( htmlStrings.length * methods.length );
+
+	// Detect natively whether this browser keeps <option> tags outside of a select element
+	nativeDiv = document.createElement("div");
+	nativeDiv.innerHTML = "<option></option>";
+	optionOutsideSelect = !!nativeDiv.lastChild;
+
+	for ( i = 0; i < htmlStrings.length; i++ ) {
+		html = htmlStrings[ i ];
+
+		// What an HTML sanitizer working on body content sees
+		nativeDiv = document.createElement("div");
+		nativeDiv.innerHTML = html;
+
+		for ( j = 0; j < methods.length; j++ ) {
+			if ( optionOutsideSelect ) {
+				equal( methods[ j ][ 1 ]( html ), nativeDiv.innerHTML,
+					methods[ j ][ 0 ] + "( " + html + " ) is parsed like innerHTML" );
+			} else {
+
+				// Support: IE<=9
+				// IE<=9 drops <option> tags outside of a select element, so jQuery
+				// still has to wrap them there
+				ok( true, "<option> requires a <select> wrapper in this browser; skipping " +
+					methods[ j ][ 0 ] + "( " + html + " )" );
+			}
+		}
+	}
+});
+
+asyncTest( "Sanitized option and optgroup HTML can't execute code through any HTML entry point (gh-4647)", function() {
+
+	var container, i, j, html, canary,
+		began = new Date().getTime(),
+		executed = {},
+		payloads = [],
+		controls = [],
+		templates = [
+			"<option><style></option></select><img src=url404 onerror=xss(#)></style>",
+			"<optgroup><style></optgroup></select><img src=url404 onerror=xss(#)></style>"
+		],
+		methods = [
+			[ "html", function( htmlString ) {
+				jQuery("<div></div>").appendTo( container ).html( htmlString );
+			} ],
+			[ "append", function( htmlString ) {
+				jQuery("<div></div>").appendTo( container ).append( htmlString );
+			} ],
+			[ "before", function( htmlString ) {
+				jQuery("<div></div>").appendTo( container ).before( htmlString );
+			} ],
+			[ "jQuery", function( htmlString ) {
+				jQuery( htmlString );
+			} ],
+			[ "jQuery.parseHTML", function( htmlString ) {
+
+				// Use the live document as context; the default inert document
+				// never loads images, so it can't expose the payload
+				jQuery.parseHTML( htmlString, document );
+			} ]
+		];
+
+	function finish() {
+		var k,
+			nativeExploit = false;
+
+		for ( k = 0; k < controls.length; k++ ) {
+			if ( executed[ controls[ k ] ] ) {
+				nativeExploit = true;
+			}
+		}
+
+		ok( executed[ canary ], "Canary, an injected onerror handler runs in this browser" );
+
+		for ( k = 0; k < payloads.length; k++ ) {
+			if ( k !== canary && jQuery.inArray( k, controls ) === -1 ) {
+				ok( !executed[ k ], "Payload isn't executed: " + payloads[ k ] +
+					( nativeExploit ? "" :
+						" (the <select> wrapper doesn't expose it natively in this browser)" ) );
+			}
+		}
+		start();
+	}
+
+	function waitForCanary() {
+		if ( executed[ canary ] || new Date().getTime() - began > 10000 ) {
+
+			// Leave time for any other injected handler to run
+			setTimeout( finish, 1000 );
+		} else {
+			setTimeout( waitForCanary, 50 );
+		}
+	}
+
+	expect( templates.length * methods.length + 1 );
+
+	Globals.register("xss");
+	window.xss = function( index ) {
+		executed[ index ] = true;
+	};
+
+	container = jQuery("<div></div>").appendTo("#qunit-fixture");
+
+	for ( i = 0; i < templates.length; i++ ) {
+		for ( j = 0; j < methods.length; j++ ) {
+			html = templates[ i ].replace( "#", payloads.length );
+			payloads.push( methods[ j ][ 0 ] + "( " + html + " )" );
+			methods[ j ][ 1 ]( html );
+		}
+	}
+
+	// Control: the same payloads wrapped in a <select> the way jQuery used to,
+	// injected with the native innerHTML
+	for ( i = 0; i < templates.length; i++ ) {
+		html = templates[ i ].replace( "#", payloads.length );
+		controls.push( payloads.length );
+		payloads.push( "<select> wrapper + innerHTML( " + html + " )" );
+		container[ 0 ].appendChild( document.createElement("div") ).innerHTML =
+			"<select multiple='multiple'>" + html + "</select>";
+	}
+
+	// Canary: a handler injected without any mutation does run
+	canary = payloads.length;
+	payloads.push( "canary" );
+	container[ 0 ].appendChild( document.createElement("div") ).innerHTML =
+		"<img src=url404 onerror=xss(" + canary + ")>";
+
+	waitForCanary();
 });
